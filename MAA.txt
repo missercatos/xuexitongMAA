@@ -1,0 +1,1673 @@
+==============================================================================
+  MaaFramework 完整原理分析 & 学习通自动化复用方案
+==============================================================================
+  基于本地源码: MaaFramework, MaaAssistantArknights, maa-website
+==============================================================================
+
+
+一、三个项目的关系
+==============================================================================
+
+  MaaAssistantArknights (MAA)
+    └── 明日方舟游戏的自动化助手，是 MaaFramework 的前身
+    └── 源码位置: /home/a/MaaAssistantArknights
+    └── C++ 核心 + Python/C#/Rust/Go/Dart/Java/Woolang 多语言绑定
+    └── 本质: 把 MaaFramework 的能力包装成了一个具体的应用
+
+  MaaFramework
+    └── 从 MAA 中抽象出来的通用自动化框架
+    └── 源码位置: /home/a/MaaFramework
+    └── C++20 核心，提供 C API，可被任意语言调用
+    └── 本质: 一个"图像识别 + 模拟输入"的引擎库
+
+  maa-website
+    └── MAA 的官网，纯前端项目 (React)
+    └── 源码位置: /home/a/maa-website
+    └── 与自动化原理无关
+
+
+二、核心实现原理 (从源码级别解析)
+==============================================================================
+
+MaaFramework 的原理不是"屏幕录制回放"。
+它是: 截图 -> 识别当前状态 -> 根据状态决定操作 -> 执行操作 -> 循环
+
+2.1 整体架构 (源码目录映射)
+------------------------------------------------------------------------
+
+  MaaFramework/source/MaaFramework/
+  ├── Vision/           <-- 图像识别层 (OpenCV + PaddleOCR + ONNX)
+  │   ├── TemplateMatcher.cpp   模板匹配 (找图)
+  │   ├── OCRer.cpp             文字识别 (PaddleOCR)
+  │   ├── FeatureMatcher.cpp    特征点匹配 (SIFT/ORB)
+  │   ├── ColorMatcher.cpp      颜色匹配
+  │   ├── NeuralNetworkClassifier.cpp  深度学习分类
+  │   └── NeuralNetworkDetector.cpp    深度学习目标检测
+  │
+  ├── Task/             <-- 任务执行层 (状态机 + Pipeline调度)
+  │   ├── PipelineTask.cpp      Pipeline 主循环 (核心!)
+  │   ├── ActionTask.cpp        动作执行任务
+  │   ├── RecognitionTask.cpp   识别任务
+  │   └── Component/
+  │       ├── Recognizer.cpp    识别器 (调度各种Vision算法)
+  │       └── Actuator.cpp      执行器 (调度各种动作)
+  │
+  ├── Controller/        <-- 控制器层 (设备通信)
+  │   └── ControllerAgent.cpp   控制器代理
+  │
+  └── Resource/          <-- 资源解析层 (Pipeline JSON 解析)
+      ├── PipelineParser.cpp    解析 Pipeline JSON
+      └── PipelineTypes.h       Pipeline 数据结构定义
+
+  MaaFramework/source/MaaAdbControlUnit/
+    └── ADB 控制器 (Android 截屏/输入/连接)
+
+  MaaFramework/source/MaaWin32ControlUnit/
+    └── Win32 控制器 (Windows 窗口截屏/输入)
+
+2.2 识别原理详解 (从 TemplateMatcher.cpp 源码)
+------------------------------------------------------------------------
+
+核心函数: TemplateMatcher::template_match()
+
+  工作流程:
+  1. 从当前截图中裁出 roi 区域
+     cv::Mat image = image_with_roi();
+
+  2. 用 OpenCV 的 matchTemplate 进行模板匹配
+     cv::matchTemplate(image, templ, matched, method);
+     // method 默认为 TM_CCOEFF_NORMED (归一化相关系数)
+     // 返回一个矩阵 matched，每个位置的值表示该位置与模板的相似度
+
+  3. 遍历匹配结果矩阵，找出超过阈值的位置
+     for (int col = 0; col < matched.cols; ++col) {
+         for (int row = 0; row < matched.rows; ++row) {
+             float score = matched.at<float>(row, col);
+             if (score >= threshold) {
+                 // 记录: 位置 box + 匹配分数 score
+                 cv::Rect box(col + roi_.x, row + roi_.y, templ.cols, templ.rows);
+                 raw_results.push_back({box, score});
+             }
+         }
+     }
+
+  4. 用 NMS (非极大值抑制) 去重
+     auto nms_results = NMS(std::move(raw_results), 0.2, !low_score_better_);
+
+  5. 按排序规则选最佳结果
+     sort_(filtered_results_);
+     best_result_ = filtered_results_[result_index];
+
+  关键参数:
+    threshold  - 匹配阈值 (0-1)，越高越严格
+    method     - 匹配算法 (默认5=TM_CCOEFF_NORMED)
+    roi        - 识别区域 [x, y, width, height]
+    green_mask - 绿色掩码 (忽略模板中的绿色区域)
+
+2.3 OCR 识别原理详解 (从 OCRer.cpp 源码)
+------------------------------------------------------------------------
+
+使用 PaddleOCR (转为 ONNX 格式) 进行文字识别。
+
+  工作流程:
+  1. 对截图的 roi 区域进行文字检测 (DBDetector)
+     找出图中所有文字区域的 bounding box
+
+  2. 对每个检测到的文字区域进行文字识别 (Recognizer)
+     将图像区域转为文字字符串
+
+  3. 与 expected 列表进行匹配 (支持正则表达式)
+     bool filter_by_required(const Result& res, const vector<wstring>& expected)
+
+  4. 返回识别到的文字、位置、置信度
+
+  关键参数:
+    expected  - 期望匹配的文字 (字符串/数组/正则)
+    threshold - 置信度阈值
+    roi       - 识别区域
+
+2.4 Pipeline 执行原理 (从 PipelineTask.cpp 源码)
+------------------------------------------------------------------------
+
+PipelineTask::run() 是整个框架的核心循环:
+
+  while (!next.empty() && !need_to_stop) {
+      // 1. 截屏
+      cv::Mat image = screencap();
+
+      // 2. 遍历 next 列表中的每个节点，依次尝试识别
+      RecoResult reco = recognize_list(image, next);
+
+      // 3. 如果有节点命中
+      if (reco.box) {
+          // 3a. 执行该节点定义的动作 (点击/滑动等)
+          auto act = run_action(reco, *hit_opt);
+
+          // 3b. 更新 next 为该节点的 next 列表
+          next = node.next;
+
+          // 3c. 如果是 [JumpBack] 节点，压栈 (执行完后返回)
+          if (jump_back) jumpback_stack.push(pre_node);
+      }
+      else {
+          // 4. 没有命中，检查超时
+          if (timeout) break;
+          sleep(rate_limit);  // 等待后再重试
+      }
+  }
+
+  关键机制:
+    - 顺序检测: next 列表按顺序逐个尝试识别
+    - 中断机制: 一旦命中某个节点，立即停止后续节点的检测
+    - JumpBack: 执行完后返回父节点继续 (用于弹窗处理)
+    - 超时终止: 当 next 列表长时间未命中时终止
+    - on_error: 动作执行失败时跳转到错误处理节点
+
+2.5 动作执行原理 (从 Actuator.cpp 源码)
+------------------------------------------------------------------------
+
+Actuator::run() 根据 action_type 分发到不同的处理函数:
+
+  switch (action_type) {
+      case Click:      click(param, box);       // 点击
+      case LongPress:  long_press(param, box);  // 长按
+      case Swipe:      swipe(param, box);       // 滑动
+      case InputText:  input_text(param);       // 输入文字
+      case ClickKey:   click_key(param);        // 按键
+      case StartApp:   start_app(param);        // 启动应用
+      case StopApp:    stop_app(param);         // 停止应用
+      case Shell:      shell(param);            // 执行ADB Shell命令
+      case Custom:     custom_action(param);    // 调用自定义动作
+      ...
+  }
+
+  点击实现 (Actuator::click):
+    - 根据 target 参数计算点击坐标
+    - target=true 时，点击识别框的中心 (带随机偏移)
+    - target=[x,y] 时，点击固定坐标
+    - 通过 Controller 调用 ADB 或 Win32 API 执行实际点击
+
+2.6 控制器 (截屏/输入) 实现
+------------------------------------------------------------------------
+
+  ADB 控制器 (Android 模拟器):
+    截屏: adb shell screencap (或 minicap/maatouch)
+    点击: adb shell input tap x y
+    滑动: adb shell input swipe x1 y1 x2 y2 duration
+    输入: adb shell input text "..."
+    启动: adb shell am start -n package/activity
+
+  Win32 控制器 (Windows 窗口):
+    截屏: Windows GDI / DirectX FramePool
+    点击: PostMessage / SendInput / ViGEm (手柄模拟)
+    输入: PostMessage WM_CHAR
+
+
+三、Pipeline JSON 协议详解 (实际可用)
+==============================================================================
+
+3.1 基础格式
+------------------------------------------------------------------------
+
+{
+    "节点名": {
+        "recognition": "识别算法类型",
+        "action": "动作类型",
+        "next": ["下一节点1", "下一节点2"],
+        // ... 其他参数
+    }
+}
+
+3.2 识别算法 (recognition) 完整列表
+------------------------------------------------------------------------
+
+  DirectHit
+    说明: 直接命中，不进行任何识别
+    用途: 无条件执行的入口节点
+
+  TemplateMatch (模板匹配/找图)
+    必选: template (模板图片路径)
+    可选: threshold (阈值,默认0.7), roi, method
+    原理: OpenCV matchTemplate
+    用途: 匹配特定图标/按钮图片
+
+  FeatureMatch (特征匹配)
+    必选: template (特征模板图片)
+    可选: count (最少匹配点数), detector
+    原理: SIFT/ORB 特征点检测+匹配
+    用途: 透视/旋转场景下的图片匹配
+
+  ColorMatch (颜色匹配)
+    必选: colors (颜色规则)
+    可选: method
+    原理: HSV/LAB颜色空间匹配
+    用途: 识别特定颜色区域
+
+  OCR (文字识别)
+    必选: expected (期望文字)
+    可选: threshold, roi, model
+    原理: PaddleOCR (DB检测+CR识别)
+    用途: 匹配按钮文字/菜单名称
+
+  NeuralNetworkClassify (深度学习分类)
+    必选: model (ONNX模型路径), expected (标签)
+    原理: ONNX Runtime 推理
+    用途: 复杂场景分类
+
+  NeuralNetworkDetect (深度学习检测)
+    必选: model (ONNX模型路径), expected (标签)
+    原理: ONNX Runtime 推理
+    用途: 目标检测
+
+  Custom (自定义识别器)
+    必选: custom_recognition (注册的识别器名)
+    可选: custom_recognition_param (自定义参数)
+    说明: 调用代码中注册的 Python/C++ 自定义逻辑
+
+3.3 动作类型 (action) 完整列表
+------------------------------------------------------------------------
+
+  DoNothing       不做任何操作
+  Click           点击 (target指定位置)
+  LongPress       长按 (duration指定时长)
+  Swipe           滑动 (begin/end指定起终点)
+  MultiSwipe      多指滑动
+  TouchDown       触摸按下
+  TouchMove       触摸移动
+  TouchUp         触摸抬起
+  ClickKey        按键
+  LongPressKey    长按按键
+  KeyDown         按键按下
+  KeyUp           按键抬起
+  InputText       输入文字
+  StartApp        启动应用 (package指定包名)
+  StopApp         停止应用
+  Scroll          滚动
+  Shell           执行ADB Shell命令
+  Screencap       截屏保存
+  Command         执行外部命令
+  StopTask        停止当前任务
+  Custom          调用自定义动作
+
+3.4 节点属性详解
+------------------------------------------------------------------------
+
+  基础属性:
+    recognition  - 识别算法配置
+    action       - 动作配置
+    next         - 后继节点列表
+    on_error     - 出错时跳转的节点
+
+  识别相关:
+    roi          - 识别区域 [x, y, w, h]
+    roi_offset   - 识别区域偏移
+    template     - 模板图片路径
+    threshold    - 匹配阈值
+    expected     - 期望文字
+    model        - ONNX模型路径
+
+  动作相关:
+    target       - 动作目标 (true=识别框中心, [x,y]=固定点)
+    target_offset- 目标偏移 (随机偏移范围)
+    duration     - 时长 (长按/滑动)
+    input_text   - 输入的文字
+    package      - 应用包名
+    exec         - 外部命令路径
+    args         - 外部命令参数
+    cmd          - ADB Shell 命令
+
+  流程控制:
+    timeout      - 超时时间 (ms)
+    rate_limit   - 识别频率限制 (ms)
+    pre_delay    - 动作前延迟 (ms)
+    post_delay   - 动作后延迟 (ms)
+    repeat       - 重复执行次数
+    max_times    - 最大执行次数
+
+  JumpBack 机制:
+    [JumpBack]节点名  - 标记为JumpBack节点
+    执行完后返回父节点继续执行
+    用于: 弹窗处理、异常恢复
+
+  锚点机制:
+    anchor       - 设置锚点节点
+
+  继承机制:
+    base_task    - 继承自另一个节点的配置
+    例: {"base_task": "ClickChapter", "text": ["觉醒"]}
+
+
+四、Python 快速开始 (实际可用代码)
+==============================================================================
+
+4.1 安装
+------------------------------------------------------------------------
+
+  # Arch Linux 环境:
+  # 1. 创建虚拟环境
+  python -m venv ~/maa-venv
+  source ~/maa-venv/bin/activate
+
+  # 2. 安装 Python binding (PyPI 版本，匹配预编译库)
+  pip install MaaFw==5.12.3
+
+  # 3. 下载预编译 C++ 库
+  curl -L -o /tmp/MAA-linux.zip \
+    "https://github.com/MaaXYZ/MaaFramework/releases/download/v5.12.3/MAA-linux-x86_64-v5.12.3.zip"
+  unzip /tmp/MAA-linux.zip -d /tmp/MAA-linux
+  cp -r /tmp/MAA-linux/bin ~/maa-bin
+
+  # 4. 设置库路径 (每次运行前)
+  export MAAFW_BINARY_PATH=~/maa-bin
+
+  # 5. 验证安装
+  python3 -c "from maa.toolkit import Toolkit; print('OK')"
+
+4.2 最小完整示例
+------------------------------------------------------------------------
+
+  from maa.tasker import Tasker
+  from maa.toolkit import Toolkit
+  from maa.resource import Resource
+  from maa.controller import AdbController
+
+  # 1. 初始化
+  Toolkit.init_option("./")
+
+  # 2. 查找 Android 设备
+  devices = Toolkit.find_adb_devices()
+  if not devices:
+      print("未找到设备")
+      exit(1)
+  device = devices[0]
+
+  # 3. 创建控制器并连接
+  controller = AdbController(
+      adb_path=device.adb_path,
+      address=device.address,
+      screencap_methods=device.screencap_methods,
+      input_methods=device.input_methods,
+      config=device.config,
+  )
+  controller.post_connection().wait()
+
+  # 4. 加载资源
+  resource = Resource()
+  resource.post_bundle("./resource").wait()  # 包含 pipeline/ + image/ + model/
+
+  # 5. 创建任务调度器
+  tasker = Tasker()
+  tasker.bind(resource, controller)
+
+  # 6. 执行任务
+  tasker.post_task("启动学习通").wait()
+
+4.3 自定义识别器 (处理复杂逻辑)
+------------------------------------------------------------------------
+
+  from maa.custom_recognition import CustomRecognition
+  from maa.context import Context
+
+  resource = Resource()
+
+  @resource.custom_recognition("识别签到类型")
+  class SignTypeReco(CustomRecognition):
+      def analyze(self, context: Context, argv: CustomRecognition.AnalyzeArg):
+          # argv.image 是当前截图 (numpy array / cv::Mat)
+          # 在这里写你的识别逻辑
+
+          # 方式1: 调用内置OCR
+          reco = context.run_recognition(
+              "OCR节点",
+              argv.image,
+              pipeline_override={"OCR节点": {"recognition": "OCR", "expected": "签到"}}
+          )
+          if reco and reco.hit:
+              return CustomRecognition.AnalyzeResult(
+                  box=reco.best_result.box,
+                  detail="检测到签到文字"
+              )
+
+          # 方式2: 直接操作控制器
+          context.tasker.controller.post_click(100, 200).wait()
+
+          # 方式3: 动态修改后续流程
+          context.override_next(argv.node_name, ["新节点A", "新节点B"])
+
+          return CustomRecognition.AnalyzeResult(box=None, detail="未匹配")
+
+4.4 自定义动作 (执行复杂操作)
+------------------------------------------------------------------------
+
+  from maa.custom_action import CustomAction
+  from maa.context import Context
+
+  @resource.custom_action("处理位置签到")
+  class LocationSign(CustomAction):
+      def run(self, context: Context, argv: CustomAction.RunArg):
+          # 可以执行任意复杂逻辑
+          ctrl = context.tasker.controller
+
+          # 截屏分析
+          image = ctrl.post_screencap().wait().get()
+
+          # 执行操作
+          ctrl.post_click(640, 360).wait()
+          ctrl.post_swipe(100, 500, 100, 100, 300).wait()
+          ctrl.post_input_text("确认签到").wait()
+
+          # 动态调整流程
+          context.override_next(argv.node_name, ["签到完成检测"])
+
+          return True  # True=成功, False=失败 (触发on_error)
+
+
+五、学习通自动签到 Pipeline 设计
+==============================================================================
+
+5.1 项目结构
+------------------------------------------------------------------------
+
+  my_chaoxing/
+  ├── main.py
+  ├── resource/
+  │   ├── pipeline/
+  │   │   ├── startup.json       启动和导航
+  │   │   ├── course.json        课程选择
+  │   │   ├── sign_in.json       签到流程
+  │   │   ├── popups.json        弹窗处理
+  │   │   └── default_pipeline.json  默认参数
+  │   ├── image/
+  │   │   ├── home_tab.png       主页标签
+  │   │   ├── course_btn.png     课程按钮
+  │   │   ├── sign_in_btn.png    签到按钮
+  │   │   ├── sign_confirm.png   签到确认
+  │   │   ├── ad_close.png       广告关闭
+  │   │   └── ...
+  │   └── model/
+  │       └── ocr/
+  │           ├── det.onnx
+  │           ├── keys.txt
+  │           └── rec.onnx
+
+5.2 Pipeline JSON 示例
+------------------------------------------------------------------------
+
+  --- startup.json ---
+  {
+      "启动学习通": {
+          "recognition": "DirectHit",
+          "action": "StartApp",
+          "package": "com.chaoxing.mobile",
+          "next": ["等待主页"]
+      },
+      "等待主页": {
+          "recognition": "TemplateMatch",
+          "template": "home_tab.png",
+          "roi": [0, 0, 1280, 120],
+          "action": "DoNothing",
+          "timeout": 15000,
+          "next": ["点击课程"]
+      },
+      "点击课程": {
+          "recognition": "OCR",
+          "expected": "课程",
+          "roi": [0, 0, 640, 120],
+          "action": "Click",
+          "next": ["选择目标课程"]
+      }
+  }
+
+  --- sign_in.json ---
+  {
+      "选择目标课程": {
+          "recognition": "TemplateMatch",
+          "template": "target_course.png",
+          "action": "Click",
+          "next": ["查找签到入口"]
+      },
+      "查找签到入口": {
+          "recognition": "OCR",
+          "expected": "签到",
+          "action": "Click",
+          "timeout": 10000,
+          "next": ["点击签到确认"]
+      },
+      "点击签到确认": {
+          "recognition": "TemplateMatch",
+          "template": "sign_confirm.png",
+          "action": "Click",
+          "next": ["检测签到结果"]
+      },
+      "检测签到结果": {
+          "recognition": "OCR",
+          "expected": ["签到成功", "已签到"],
+          "action": "DoNothing",
+          "next": []
+      }
+  }
+
+  --- popups.json ---
+  {
+      "[JumpBack]关闭广告": {
+          "recognition": "TemplateMatch",
+          "template": "ad_close.png",
+          "roi": [1000, 0, 280, 100],
+          "action": "Click",
+          "doc": "关闭广告弹窗"
+      },
+      "[JumpBack]关闭公告": {
+          "recognition": "OCR",
+          "expected": "我知道了",
+          "action": "Click",
+          "doc": "关闭公告弹窗"
+      }
+  }
+
+5.3 完整 main.py
+------------------------------------------------------------------------
+
+  from maa.tasker import Tasker
+  from maa.toolkit import Toolkit
+  from maa.resource import Resource
+  from maa.controller import AdbController
+
+  def main():
+      Toolkit.init_option("./")
+
+      devices = Toolkit.find_adb_devices()
+      if not devices:
+          print("请先启动Android模拟器")
+          return
+
+      device = devices[0]
+      controller = AdbController(
+          adb_path=device.adb_path,
+          address=device.address,
+          screencap_methods=device.screencap_methods,
+          input_methods=device.input_methods,
+          config=device.config,
+      )
+      controller.post_connection().wait()
+
+      resource = Resource()
+      resource.post_bundle("./resource").wait()
+
+      tasker = Tasker()
+      tasker.bind(resource, controller)
+
+      if not tasker.inited:
+          print("初始化失败")
+          return
+
+      # 执行签到
+      result = tasker.post_task("启动学习通").wait().get()
+      if result.completed:
+          print("签到成功!")
+      else:
+          print("签到失败")
+
+
+六、开发语言选择
+==============================================================================
+
+6.1 结论: 只需一种语言
+------------------------------------------------------------------------
+
+  MaaFramework 核心是 C++，但你只需要用一种语言的 binding 即可。
+
+  支持的语言:
+    Python  - 推荐! 最成熟，MaaXuexi 项目就用 Python
+    Node.js - npm 包 @maaxyz/maa-node
+    Go      - maa-framework-go
+    Rust    - maa-framework crate
+    C#      - NuGet 包
+    C++     - 直接使用 C API
+
+6.2 为什么源码有多种语言?
+------------------------------------------------------------------------
+
+  1. MaaFramework 核心是 C++ (引擎层)
+  2. 各语言 binding 是对 C API 的封装 (调用层)
+  3. MaaAssistantArknights 有 C++/Python/C#/Rust/Go/Dart/Java/Woolang 绑定
+     是因为它支持多平台 (Windows/Linux/macOS/Android)
+     不同平台用不同语言写 UI
+
+  你不需要学多种语言。
+  如果你用 Python，只需:
+    pip install MaaFw
+    然后写 Pipeline JSON + Python 逻辑即可。
+
+
+七、可复用的部分
+==============================================================================
+
+7.1 可直接复用
+------------------------------------------------------------------------
+
+  MaaFramework 核心引擎
+    - 图像识别 (OpenCV 模板匹配)
+    - 文字识别 (PaddleOCR)
+    - 输入控制 (ADB/Win32)
+    - Pipeline 任务调度
+    - 所有 Python API
+
+  Pipeline JSON 协议
+    - 用 JSON 描述自动化流程
+    - 无需写代码即可实现简单自动化
+
+  资源文件结构
+    - pipeline/ + image/ + model/ 目录结构
+
+7.2 需要新做
+------------------------------------------------------------------------
+
+  学习通的 Pipeline JSON 配置
+    - 针对学习通 UI 编写识别节点
+
+  学习通的模板图片
+    - 截图裁剪学习通各页面的按钮/图标
+
+  学习通特有的业务逻辑
+    - 签到类型判断
+    - 验证码处理 (如有)
+
+
+八、参考项目
+==============================================================================
+
+  MaaXuexi (学习强国自动化 - 最佳参考!)
+    https://github.com/ravizhan/MaaXuexi
+    已经实现了类似的学习类APP自动化
+
+  MaaFramework 官方文档
+    https://maafw.com/docs/1.1-QuickStarted/
+
+  Pipeline 协议文档
+    https://github.com/MaaXYZ/MaaFramework/blob/main/docs/zh_cn/3.1-任务流水线协议.md
+
+  Python 示例
+    /home/a/MaaFramework/sample/python/demo1.py
+
+  Pipeline 示例
+    /home/a/MaaFramework/sample/resource/pipeline/sample.json
+
+  MAA 真实 Pipeline (明日方舟)
+    /home/a/MaaAssistantArknights/resource/tasks/tasks.json
+
+  预编译库
+    /tmp/MAA-linux/bin/    (已下载到 ~/maa-bin)
+
+  Python binding (PyPI)
+    pip install MaaFw==5.12.3
+
+
+九、已验证的环境搭建步骤 (Arch Linux)
+==============================================================================
+
+  1. 创建虚拟环境
+     python -m venv ~/maa-venv
+     source ~/maa-venv/bin/activate
+
+  2. 安装 Python binding
+     pip install MaaFw==5.12.3
+
+  3. 下载预编译 C++ 库 (已下载到 ~/maa-bin)
+     curl -L -o /tmp/MAA-linux.zip \
+       "https://github.com/MaaXYZ/MaaFramework/releases/download/v5.12.3/MAA-linux-x86_64-v5.12.3.zip"
+     unzip /tmp/MAA-linux.zip -d /tmp/MAA-linux
+     cp -r /tmp/MAA-linux/bin ~/maa-bin
+
+  4. 运行时设置环境变量
+     export MAAFW_BINARY_PATH=~/maa-bin
+
+  5. 验证
+     python3 -c "from maa.toolkit import Toolkit; print('OK')"
+
+  6. 使用
+     启动 Android 模拟器 (MuMu/雷电/夜神)
+     设置模拟器分辨率为 1280x720, DPI 240
+     运行你的 Python 脚本
+
+
+十、完整可运行示例 (学习通签到框架)
+==============================================================================
+
+  保存为 ~/chaoxing_bot/main.py:
+
+  -------------------------------------------------------
+  import os, pathlib
+  os.environ["MAAFW_BINARY_PATH"] = os.path.expanduser("~/maa-bin")
+
+  from maa.toolkit import Toolkit
+  from maa.resource import Resource
+  from maa.tasker import Tasker
+  from maa.controller import AdbController
+  from maa.custom_recognition import CustomRecognition
+  from maa.context import Context
+
+  # 全局资源对象 (用于注册自定义识别器/动作)
+  resource = Resource()
+
+  def main():
+      Toolkit.init_option("./")
+
+      # 查找设备
+      devices = Toolkit.find_adb_devices()
+      if not devices:
+          print("请先启动 Android 模拟器")
+          return
+      device = devices[0]
+      print(f"使用设备: {device.address}")
+
+      # 连接
+      ctrl = AdbController(
+          adb_path=device.adb_path,
+          address=device.address,
+          screencap_methods=device.screencap_methods,
+          input_methods=device.input_methods,
+          config=device.config,
+      )
+      ctrl.post_connection().wait()
+
+      # 加载资源 (pipeline JSON + 图片 + OCR模型)
+      res = Resource()
+      res.post_bundle(pathlib.Path("./resource")).wait()
+
+      # 创建调度器
+      tasker = Tasker()
+      tasker.bind(res, ctrl)
+      if not tasker.inited:
+          print("初始化失败")
+          return
+
+      # 执行签到任务
+      result = tasker.post_task("启动学习通").wait().get()
+      print("签到结果:", "成功" if result.completed else "失败")
+
+
+  @resource.custom_recognition("OCR匹配文字")
+  class OcrMatch(CustomRecognition):
+      def analyze(self, ctx: Context, argv):
+          reco = ctx.run_recognition(
+              "内部OCR",
+              argv.image,
+              pipeline_override={"内部OCR": {
+                  "recognition": "OCR",
+                  "expected": argv.custom_recognition_param.get("text", ""),
+                  "roi": argv.custom_recognition_param.get("roi", [0,0,0,0])
+              }}
+          )
+          if reco and reco.hit:
+              return CustomRecognition.AnalyzeResult(
+                  box=reco.best_result.box,
+                  detail=f"匹配到: {reco.best_result.text}"
+              )
+          return CustomRecognition.AnalyzeResult(box=None, detail="未匹配")
+
+
+  if __name__ == "__main__":
+      main()
+  -------------------------------------------------------
+
+  配套的 resource/pipeline/sign_in.json:
+
+  -------------------------------------------------------
+  {
+      "启动学习通": {
+          "recognition": "DirectHit",
+          "action": "StartApp",
+          "package": "com.chaoxing.mobile",
+          "post_delay": 3000,
+          "next": ["等待主页"]
+      },
+      "等待主页": {
+          "recognition": "OCR",
+          "expected": "课程",
+          "roi": [0, 0, 640, 120],
+          "action": "Click",
+          "timeout": 15000,
+          "next": ["选择课程"]
+      },
+      "选择课程": {
+          "recognition": "TemplateMatch",
+          "template": "course.png",
+          "action": "Click",
+          "next": ["查找签到"]
+      },
+      "查找签到": {
+          "recognition": "OCR",
+          "expected": "签到",
+          "action": "Click",
+          "timeout": 10000,
+          "next": ["确认签到"]
+      },
+      "确认签到": {
+          "recognition": "TemplateMatch",
+          "template": "confirm.png",
+          "action": "Click",
+          "next": ["签到完成"]
+      },
+      "签到完成": {
+          "recognition": "OCR",
+          "expected": ["签到成功", "已签到"],
+          "action": "DoNothing",
+          "next": []
+      }
+  }
+  -------------------------------------------------------
+
+
+==============================================================================
+  最终总结:
+  1. 原理: 截图 -> OpenCV/OCR识别 -> 状态机决策 -> ADB模拟操作 -> 循环
+  2. 已验证: Python binding v5.12.3 + 预编译库 = 环境可用
+  3. 只需启动模拟器即可运行
+  4. 核心工作: 编写 Pipeline JSON + 截图裁剪模板图片
+  5. 语言: 只需 Python，pip install MaaFw==5.12.3
+==============================================================================
+
+
+==============================================================================
+  总结:
+  1. MaaFramework 的原理是 "截图->识别->操作" 的视觉智能循环
+  2. 不是录屏回放，是基于 OpenCV + OCR 的实时识别
+  3. 核心执行逻辑在 PipelineTask::run() 中
+  4. 复用到学习通完全可行，只需编写 Pipeline JSON + 准备模板图片
+  5. 语言只需 Python，pip install MaaFw 即可
+  6. 参考 MaaXuexi 项目的架构设计
+==============================================================================
+
+
+==============================================================================
+  Python API 完整参考 (每个函数签名 + 参数 + 用法)
+==============================================================================
+
+  所有源码位于:
+    /home/a/MaaFramework/source/binding/Python/maa/
+    对应安装后: ~/maa-venv/lib/python3.13/site-packages/maa/
+
+十一、Toolkit 类
+==============================================================================
+
+  源码: maa/toolkit.py
+
+  类方法 (不需要实例化，直接 Toolkit.xxx() 调用):
+
+  ---------------------------------------------------------------------------
+  Toolkit.init_option(resource_path: str) -> None
+  ---------------------------------------------------------------------------
+    说明: 初始化全局选项，必须在所有其他 API 调用前执行一次
+    参数:
+      resource_path - 资源目录路径 (包含 pipeline/, image/, model/)
+    返回: 无
+    异常: RuntimeError 如果初始化失败
+
+    用法:
+      Toolkit.init_option("/path/to/resource")
+
+  ---------------------------------------------------------------------------
+  Toolkit.find_adb_devices() -> List[AdbDevice]
+  ---------------------------------------------------------------------------
+    说明: 自动扫描所有已连接的 ADB 设备/模拟器
+    参数: 无
+    返回: AdbDevice 列表，每个设备包含:
+      .adb_path        - ADB 可执行文件路径 (str)
+      .address         - 设备地址 (str, 如 "127.0.0.1:5555")
+      .screencap_methods - 截屏方法掩码 (int, 组合值)
+      .input_methods   - 输入方法掩码 (int, 组合值)
+      .config          - 额外配置 (str)
+    返回空列表表示未找到设备
+
+    用法:
+      devices = Toolkit.find_adb_devices()
+      for d in devices:
+          print(f"{d.address} via {d.adb_path}")
+
+  ---------------------------------------------------------------------------
+  Toolkit.find_win32_containers() -> List[Win32Container]
+  ---------------------------------------------------------------------------
+    说明: 扫描所有可用的 Win32 窗口 (仅 Windows)
+    返回: Win32Container 列表
+
+十二、Resource 类
+==============================================================================
+
+  源码: maa/resource.py
+
+  构造函数:
+  ---------------------------------------------------------------------------
+  Resource(handle: Optional[MaaResourceHandle] = None)
+  ---------------------------------------------------------------------------
+    说明: 创建资源对象
+    参数:
+      handle - 可选的外部 C 句柄 (通常不需要传，直接 Resource() 即可)
+    返回: Resource 实例
+    异常: RuntimeError 如果创建失败
+
+    用法:
+      resource = Resource()
+
+  ---------------------------------------------------------------------------
+  resource.post_bundle(path: Union[Path, str]) -> Job
+  ---------------------------------------------------------------------------
+    说明: 异步加载资源目录 (包含 pipeline JSON + 图片 + 模型)
+    参数:
+      path - 资源目录路径
+    返回: Job 对象，调用 .wait() 等待完成，.get() 获取结果
+    注意: 这是异步操作，必须 .wait() 后才能使用资源
+
+    用法:
+      job = resource.post_bundle("./resource")
+      job.wait()
+      if not job.get().completed:
+          print("加载资源失败")
+
+  ---------------------------------------------------------------------------
+  resource.post_pipeline(path: Union[Path, str]) -> Job
+  ---------------------------------------------------------------------------
+    说明: 异步加载 Pipeline JSON 文件或目录
+    参数:
+      path - Pipeline JSON 文件或目录路径
+    返回: Job 对象
+
+    用法:
+      resource.post_pipeline("./resource/pipeline/sign_in.json").wait()
+
+  ---------------------------------------------------------------------------
+  resource.post_ocr_model(path: Union[Path, str]) -> Job
+  ---------------------------------------------------------------------------
+    说明: 异步加载 OCR 模型
+    参数:
+      path - OCR 模型目录路径 (含 det.onnx, rec.onnx, keys.txt)
+    返回: Job 对象
+
+    用法:
+      resource.post_ocr_model("./resource/model/ocr").wait()
+
+  ---------------------------------------------------------------------------
+  resource.post_image(path: Union[Path, str]) -> Job
+  ---------------------------------------------------------------------------
+    说明: 异步加载图片资源 (模板匹配用的截图)
+    参数:
+      path - 图片目录或文件路径
+    返回: Job 对象
+
+  ---------------------------------------------------------------------------
+  resource.override_pipeline(pipeline_override: dict) -> bool
+  ---------------------------------------------------------------------------
+    说明: 运行时覆盖已加载的 Pipeline 节点配置
+    参数:
+      pipeline_override - {节点名: {要覆盖的属性}} 字典
+    返回: 是否成功
+
+    用法:
+      resource.override_pipeline({
+          "查找签到": {"timeout": 20000, "roi": [0, 0, 640, 200]}
+      })
+
+  ---------------------------------------------------------------------------
+  resource.override_next(name: str, next_list: list[str]) -> bool
+  ---------------------------------------------------------------------------
+    说明: 运行时覆盖某个节点的 next 列表
+    参数:
+      name - 节点名
+      next_list - 新的 next 列表
+    返回: 是否成功
+
+    用法:
+      resource.override_next("查找签到", ["签到确认", "签到失败"])
+
+  ---------------------------------------------------------------------------
+  resource.override_image(image_name: str, image: numpy.ndarray) -> bool
+  ---------------------------------------------------------------------------
+    说明: 运行时替换模板图片 (不用重新加载文件)
+    参数:
+      image_name - 图片名 (不含路径和后缀)
+      image - 新的图片数据 (numpy array, BGR格式)
+    返回: 是否成功
+
+    用法:
+      import cv2
+      new_img = cv2.imread("new_template.png")
+      resource.override_image("sign_confirm", new_img)
+
+  ---------------------------------------------------------------------------
+  resource.get_node_data(name: str) -> Optional[dict]
+  ---------------------------------------------------------------------------
+    说明: 获取某个 Pipeline 节点的完整配置
+    参数:
+      name - 节点名
+    返回: 节点配置字典，不存在则返回 None
+
+    用法:
+      node = resource.get_node_data("查找签到")
+      if node:
+          print(node["recognition"])  # "OCR"
+
+  ---------------------------------------------------------------------------
+  resource.register_custom_recognition(name: str, reco: CustomRecognition) -> bool
+  ---------------------------------------------------------------------------
+    说明: 注册自定义识别器 (可以用装饰器语法)
+    参数:
+      name - 识别器名 (Pipeline JSON 中 custom_recognition 字段引用此名)
+      reco - CustomRecognition 实例
+    返回: 是否成功
+
+    用法 (装饰器):
+      @resource.custom_recognition("我的OCR识别器")
+      class MyOCR(CustomRecognition):
+          def analyze(self, context, argv):
+              ...
+
+    用法 (直接注册):
+      resource.register_custom_recognition("我的OCR识别器", MyOCR())
+
+  ---------------------------------------------------------------------------
+  resource.register_custom_action(name: str, action: CustomAction) -> bool
+  ---------------------------------------------------------------------------
+    说明: 注册自定义动作
+    参数:
+      name - 动作名 (Pipeline JSON 中 custom_action 字段引用此名)
+      action - CustomAction 实例
+    返回: 是否成功
+
+    用法:
+      @resource.custom_action("处理签到")
+      class HandleSign(CustomAction):
+          def run(self, context, argv):
+              ...
+
+  ---------------------------------------------------------------------------
+  resource.post究竞自定义 (装饰器快捷方式)
+  ---------------------------------------------------------------------------
+    @resource.custom_recognition(name: str) -> 注册自定义识别器
+    @resource.custom_action(name: str) -> 注册自定义动作
+
+十三、Controller 类 (AdbController / Win32Controller)
+==============================================================================
+
+  源码: maa/controller.py
+
+  ---------------------------------------------------------------------------
+  AdbController 构造函数:
+  ---------------------------------------------------------------------------
+  AdbController(
+      adb_path: str,                    # ADB 可执行文件路径
+      address: str,                     # 设备地址 (如 "127.0.0.1:5555")
+      screencap_methods: int = 0,       # 截屏方法掩码 (0=自动检测)
+      input_methods: int = 0,           # 输入方法掩码 (0=自动检测)
+      config: str = "",                 # 额外配置 JSON 字符串
+  )
+    说明: 创建 Android ADB 控制器
+    异常: RuntimeError 如果创建失败
+
+    用法:
+      ctrl = AdbController(
+          adb_path=device.adb_path,
+          address=device.address,
+          screencap_methods=device.screencap_methods,
+          input_methods=device.input_methods,
+          config=device.config,
+      )
+
+  ---------------------------------------------------------------------------
+  Win32Controller 构造函数 (仅 Windows):
+  ---------------------------------------------------------------------------
+  Win32Controller(
+      hwnd: int,                        # 窗口句柄
+  )
+
+  ---------------------------------------------------------------------------
+  所有 Controller 共有的异步方法 (返回 Job):
+  ---------------------------------------------------------------------------
+
+  ctrl.post_connection() -> Job
+    说明: 连接设备 (ADB 需要先连接才能操作)
+    用法: ctrl.post_connection().wait()
+
+  ctrl.post_screencap() -> Job
+    说明: 截取当前屏幕
+    返回: Job，.wait().get() 返回 ImageBuffer
+    用法:
+      image = ctrl.post_screencap().wait().get().get()  # numpy array (BGR)
+
+  ctrl.post_click(x: int, y: int) -> Job
+    说明: 点击指定坐标
+    参数:
+      x, y - 屏幕坐标
+    用法: ctrl.post_click(640, 360).wait()
+
+  ctrl.post_long_press(x: int, y: int, duration: int = 500) -> Job
+    说明: 长按指定坐标
+    参数:
+      x, y - 屏幕坐标
+      duration - 长按时长 (毫秒)
+
+  ctrl.post_swipe(
+      x1: int, y1: int,          # 起点
+      x2: int, y2: int,          # 终点
+      duration: int = 300,        # 滑动时长 (毫秒)
+  ) -> Job
+    说明: 从起点滑动到终点
+    用法: ctrl.post_swipe(100, 500, 100, 100, 300).wait()
+
+  ctrl.post_input_text(text: str) -> Job
+    说明: 输入文字 (需设备支持)
+    用法: ctrl.post_input_text("你好").wait()
+
+  ctrl.post_click_key(key: int) -> Job
+    说明: 按下按键 (Android KeyCode)
+    用法: ctrl.post_click_key(4).wait()  # KEYCODE_BACK
+
+  ctrl.post_start_app(package: str) -> Job
+    说明: 启动应用
+    用法: ctrl.post_start_app("com.chaoxing.mobile").wait()
+
+  ctrl.post_stop_app(package: str) -> Job
+    说明: 停止应用
+
+  ctrl.post_shell(cmd: str) -> Job
+    说明: 执行 ADB Shell 命令
+    返回: Job，.wait().get() 返回 StringBuffer
+
+十四、Tasker 类
+==============================================================================
+
+  源码: maa/tasker.py
+
+  构造函数:
+  ---------------------------------------------------------------------------
+  Tasker()
+  ---------------------------------------------------------------------------
+    说明: 创建任务调度器
+    用法: tasker = Tasker()
+
+  ---------------------------------------------------------------------------
+  tasker.bind(resource: Resource, controller: Controller) -> bool
+  ---------------------------------------------------------------------------
+    说明: 绑定资源和控制器 (必须在 post_task 前调用)
+    参数:
+      resource - 已加载资源的 Resource 对象
+      controller - 已连接的 Controller 对象
+    返回: 是否绑定成功
+    异常: RuntimeError 如果绑定失败
+
+    用法:
+      ok = tasker.bind(resource, controller)
+      if not ok:
+          print("绑定失败")
+
+  ---------------------------------------------------------------------------
+  tasker.inited -> bool (属性)
+  ---------------------------------------------------------------------------
+    说明: 判断 Tasker 是否已初始化完成
+    用法: if tasker.inited: ...
+
+  ---------------------------------------------------------------------------
+  tasker.controller -> Controller (属性)
+  ---------------------------------------------------------------------------
+    说明: 获取绑定的控制器
+    用法: tasker.controller.post_click(100, 100).wait()
+
+  ---------------------------------------------------------------------------
+  tasker.post_task(
+      entry: str,                           # Pipeline 入口节点名
+      pipeline_override: dict = {},         # 运行时覆盖参数
+      block: bool = False,                  # 是否同步阻塞等待
+  ) -> TaskJob
+  ---------------------------------------------------------------------------
+    说明: 提交任务执行
+    参数:
+      entry - Pipeline JSON 中的入口节点名
+      pipeline_override - 覆盖参数，格式 {"节点名": {"属性": "值"}}
+      block - True 则同步等待完成 (等同于 .wait())
+    返回: TaskJob 对象
+
+    用法:
+      # 异步执行
+      job = tasker.post_task("启动学习通")
+      job.wait()
+      result = job.get()
+
+      # 同步执行
+      result = tasker.post_task("启动学习通", block=True).get()
+
+      # 带覆盖参数
+      result = tasker.post_task(
+          "签到",
+          pipeline_override={"查找签到": {"timeout": 20000}}
+      ).wait().get()
+
+  ---------------------------------------------------------------------------
+  tasker.get_task_detail(task_id: int) -> Optional[TaskDetail]
+  ---------------------------------------------------------------------------
+    说明: 获取任务执行详情
+    参数:
+      task_id - 任务 ID
+    返回: TaskDetail 对象，包含:
+      .task_id       - 任务 ID (int)
+      .entry         - 入口节点名 (str)
+      .completed     - 是否完成 (bool)
+      .node_details  - 各节点执行详情 (list)
+
+  ---------------------------------------------------------------------------
+  tasker.get_recognition_detail(reco_id: int) -> Optional[RecognitionDetail]
+  ---------------------------------------------------------------------------
+    说明: 获取识别结果详情
+    返回: RecognitionDetail 对象，包含:
+      .hit           - 是否命中 (bool)
+      .best_result   - 最佳识别结果 (RecognitionResult)
+        .box         - 识别位置 [x, y, w, h] (list[int])
+        .label       - 标签 (str)
+        .text        - 识别到的文字 (str)
+        .score       - 置信度 (float)
+      .all_results   - 所有识别结果 (list)
+
+  ---------------------------------------------------------------------------
+  tasker.get_action_detail(act_id: int) -> Optional[ActionDetail]
+  ---------------------------------------------------------------------------
+    说明: 获取动作执行详情
+    返回: ActionDetail 对象，包含:
+      .success       - 是否成功 (bool)
+
+  ---------------------------------------------------------------------------
+  tasker.post_override_pipeline(pipeline_override: dict) -> bool
+  ---------------------------------------------------------------------------
+    说明: 全局覆盖 Pipeline 配置 (对所有后续任务生效)
+    用法: tasker.post_override_pipeline({"查找签到": {"timeout": 30000}})
+
+十五、Context 类
+==============================================================================
+
+  源码: maa/context.py
+
+  说明: 任务执行上下文，主要在 CustomRecognition/CustomAction 的回调中使用
+
+  ---------------------------------------------------------------------------
+  ctx.run_task(
+      entry: str,
+      pipeline_override: Optional[dict] = None,
+  ) -> Optional[TaskDetail]
+  ---------------------------------------------------------------------------
+    说明: 在当前上下文中同步执行子任务
+    参数:
+      entry - 子任务入口节点名
+      pipeline_override - 覆盖参数
+    返回: TaskDetail
+
+    用法:
+      detail = ctx.run_task("处理弹窗")
+      if detail and detail.completed:
+          print("弹窗已处理")
+
+  ---------------------------------------------------------------------------
+  ctx.run_recognition(
+      entry: str,
+      image: numpy.ndarray,
+      pipeline_override: Optional[dict] = None,
+  ) -> Optional[RecognitionDetail]
+  ---------------------------------------------------------------------------
+    说明: 对指定图片执行识别 (不执行动作，不触发 next)
+    参数:
+      entry - Pipeline 节点名 (用其识别配置)
+      image - 待识别的图片 (numpy array, BGR)
+      pipeline_override - 覆盖参数
+    返回: RecognitionDetail (可通过 .hit 判断是否命中)
+
+    用法:
+      reco = ctx.run_recognition(
+          "查找签到",
+          image,
+          pipeline_override={"查找签到": {"expected": "签到"}}
+      )
+      if reco and reco.hit:
+          print("找到签到按钮在:", reco.best_result.box)
+
+  ---------------------------------------------------------------------------
+  ctx.run_action(
+      entry: str,
+      box: RectType = (0, 0, 0, 0),
+      reco_detail: str = "",
+      pipeline_override: Optional[dict] = None,
+  ) -> Optional[ActionDetail]
+  ---------------------------------------------------------------------------
+    说明: 执行动作 (不触发 next)
+    参数:
+      entry - 节点名
+      box - 识别到的位置 [x, y, w, h]
+      reco_detail - 识别详情字符串
+      pipeline_override - 覆盖参数
+    返回: ActionDetail
+
+  ---------------------------------------------------------------------------
+  ctx.run_recognition_direct(
+      reco_type: str,                  # 识别类型 "TemplateMatch"/"OCR" 等
+      reco_param: dict,                # 识别参数
+      image: numpy.ndarray,            # 待识别图片
+  ) -> Optional[RecognitionDetail]
+  ---------------------------------------------------------------------------
+    说明: 直接用识别类型和参数执行识别，无需 Pipeline 节点
+    参数:
+      reco_type - 识别算法名 (如 "TemplateMatch", "OCR")
+      reco_param - 该算法需要的参数字典
+      image - 图片
+    返回: RecognitionDetail
+
+    用法:
+      reco = ctx.run_recognition_direct(
+          "OCR",
+          {"expected": ["签到成功", "已签到"]},
+          image
+      )
+      if reco and reco.hit:
+          print("识别到:", reco.best_result.text)
+
+  ---------------------------------------------------------------------------
+  ctx.run_action_direct(
+      action_type: str,                # 动作类型 "Click"/"Swipe" 等
+      action_param: dict,              # 动作参数
+      box: RectType = (0, 0, 0, 0),
+      reco_detail: str = "",
+  ) -> Optional[ActionDetail]
+  ---------------------------------------------------------------------------
+    说明: 直接用动作类型和参数执行动作，无需 Pipeline 节点
+    参数:
+      action_type - 动作类型名 (如 "Click", "Swipe")
+      action_param - 动作参数字典
+      box - 识别位置
+      reco_detail - 识别详情
+    返回: ActionDetail
+
+    用法:
+      ctx.run_action_direct("Click", {"target": [640, 360]})
+
+  ---------------------------------------------------------------------------
+  ctx.override_next(name: str, next_list: list[str]) -> bool
+  ---------------------------------------------------------------------------
+    说明: 动态修改某个节点的 next 列表
+    用法: ctx.override_next(argv.node_name, ["新节点A", "新节点B"])
+
+  ---------------------------------------------------------------------------
+  ctx.tasker -> Tasker (属性)
+  ---------------------------------------------------------------------------
+    说明: 获取关联的 Tasker
+    用法:
+      ctrl = ctx.tasker.controller
+      image = ctrl.post_screencap().wait().get().get()
+
+十六、Job / TaskJob 类
+==============================================================================
+
+  源码: maa/job.py
+
+  ---------------------------------------------------------------------------
+  job.wait() -> Job
+  ---------------------------------------------------------------------------
+    说明: 同步等待操作完成
+    返回: self (支持链式调用)
+    用法: resource.post_bundle("./resource").wait()
+
+  ---------------------------------------------------------------------------
+  job.get() -> TaskJobDetail / None
+  ---------------------------------------------------------------------------
+    说明: 获取操作结果 (必须先 .wait())
+    返回: 结果对象，包含:
+      .completed - 是否成功完成 (bool)
+      .error     - 错误信息 (str)
+
+    用法:
+      result = tasker.post_task("签到").wait().get()
+      if result.completed:
+          print("成功!")
+      else:
+          print("失败:", result.error)
+
+  ---------------------------------------------------------------------------
+  job.status() -> int
+  ---------------------------------------------------------------------------
+    说明: 获取当前状态
+    返回: 0=pending, 1=running, 2=completed, 3=failed
+
+十七、CustomRecognition 类 (自定义识别器)
+==============================================================================
+
+  源码: maa/custom_recognition.py
+
+  说明: 继承此类实现自定义识别逻辑，注册后可在 Pipeline JSON 中通过
+        "recognition": "Custom", "custom_recognition": "你的识别器名" 使用
+
+  ---------------------------------------------------------------------------
+  class YourRecognition(CustomRecognition):
+      def analyze(
+          self,
+          context: Context,
+          argv: CustomRecognition.AnalyzeArg,
+      ) -> Union[CustomRecognition.AnalyzeResult, Optional[RectType]]:
+  ---------------------------------------------------------------------------
+    参数:
+      context - 任务上下文 (可执行其他操作、截屏、调用其他识别器)
+      argv - 识别参数，包含:
+        .task_detail                - 当前任务详情 (TaskDetail)
+        .node_name                  - 当前节点名 (str)
+        .custom_recognition_name    - 识别器名 (str)
+        .custom_recognition_param   - 自定义参数 (str, JSON格式，从Pipeline传入)
+        .image                      - 待识别图片 (numpy.ndarray, BGR)
+        .roi                        - 识别区域 [x, y, w, h]
+    返回: 三种方式任选:
+      1. AnalyzeResult(box=[x,y,w,h], detail="描述")  - 命中
+      2. [x, y, w, h]  或 (x, y, w, h)  - 直接返回坐标 = 命中
+      3. None  - 未命中
+
+    完整示例:
+      @resource.custom_recognition("智能签到识别")
+      class SmartSignReco(CustomRecognition):
+          def analyze(self, ctx, argv):
+              # 1. 从参数中读取配置
+              import json
+              param = json.loads(argv.custom_recognition_param)
+              target_text = param.get("text", "签到")
+
+              # 2. 用内置 OCR 识别文字
+              reco = ctx.run_recognition(
+                  "临时OCR",
+                  argv.image,
+                  pipeline_override={
+                      "临时OCR": {
+                          "recognition": "OCR",
+                          "expected": target_text,
+                          "roi": argv.roi
+                      }
+                  }
+              )
+
+              # 3. 判断是否命中
+              if reco and reco.hit:
+                  return CustomRecognition.AnalyzeResult(
+                      box=reco.best_result.box,
+                      detail=f"找到了: {reco.best_result.text}, "
+                             f"置信度: {reco.best_result.score:.2f}"
+                  )
+
+              # 4. 可以在这里直接操作设备
+              # ctx.tasker.controller.post_click(100, 200).wait()
+
+              # 5. 未命中
+              return CustomRecognition.AnalyzeResult(box=None, detail="未找到")
+
+    Pipeline JSON 配置:
+      {
+          "智能签到识别": {
+              "recognition": "Custom",
+              "custom_recognition": "智能签到识别",
+              "custom_recognition_param": "{\"text\": \"签到按钮\"}",
+              "action": "Click",
+              "next": ["签到确认"]
+          }
+      }
+
+十八、CustomAction 类 (自定义动作)
+==============================================================================
+
+  源码: maa/custom_action.py
+
+  说明: 继承此类实现自定义动作，注册后可在 Pipeline JSON 中通过
+        "action": "Custom", "custom_action": "你的动作名" 使用
+
+  ---------------------------------------------------------------------------
+  class YourAction(CustomAction):
+      def run(
+          self,
+          context: Context,
+          argv: CustomAction.RunArg,
+      ) -> Union[CustomAction.RunResult, bool]:
+  ---------------------------------------------------------------------------
+    参数:
+      context - 任务上下文
+      argv - 动作参数，包含:
+        .task_detail             - 当前任务详情
+        .node_name               - 当前节点名
+        .custom_action_name      - 动作名
+        .custom_action_param     - 自定义参数 (str, JSON格式)
+        .reco_detail             - 前序识别详情 (RecognitionDetail)
+        .box                     - 前序识别位置 [x, y, w, h]
+    返回: 两种方式任选:
+      1. RunResult(success=True/False)
+      2. True/False (True=成功，False=失败触发 on_error)
+
+    完整示例:
+      @resource.custom_action("自动填写签到码")
+      class AutoFillCode(CustomAction):
+          def run(self, ctx, argv):
+              import json
+              param = json.loads(argv.custom_action_param)
+              code = param.get("code", "123456")
+
+              ctrl = ctx.tasker.controller
+
+              # 1. 截屏查看当前状态
+              image = ctrl.post_screencap().wait().get().get()
+
+              # 2. 找到输入框并点击
+              ctrl.post_click(640, 400).wait()
+
+              # 3. 输入签到码
+              ctrl.post_input_text(code).wait()
+
+              # 4. 点击确认
+              ctrl.post_click(640, 500).wait()
+
+              # 5. 等待结果
+              import time
+              time.sleep(2)
+
+              return True  # True=成功
+
+    Pipeline JSON 配置:
+      {
+          "填写签到码": {
+              "recognition": "OCR",
+              "expected": "请输入签到码",
+              "action": "Custom",
+              "custom_action": "自动填写签到码",
+              "custom_action_param": "{\"code\": \"ABC123\"}",
+              "next": ["签到完成检测"]
+          }
+      }
+
+十九、数据类型定义
+==============================================================================
+
+  源码: maa/define.py
+
+  常用类型:
+    RectType = Union[list[int], tuple[int,int,int,int], numpy.ndarray]
+      表示矩形区域 [x, y, width, height]
+      x, y - 左上角坐标
+      width, height - 宽度和高度
+
+    TaskDetail:
+      .task_id    - 任务 ID (int)
+      .entry      - 入口节点名 (str)
+      .completed  - 是否完成 (bool)
+      .node_details - 节点详情列表
+
+    RecognitionDetail:
+      .hit         - 是否命中 (bool)
+      .best_result - 最佳结果 (RecognitionResult)
+      .all_results - 所有结果列表
+
+    RecognitionResult:
+      .box   - 位置 [x, y, w, h]
+      .label - 标签 (str)
+      .text  - 识别文字 (str)
+      .score - 置信度 (float, 0-1)
+
+    ActionDetail:
+      .success - 动作是否成功 (bool)
+
+  识别类型常量 (recognition):
+    "DirectHit"              直接命中
+    "TemplateMatch"          模板匹配
+    "FeatureMatch"           特征匹配
+    "ColorMatch"             颜色匹配
+    "OCR"                    文字识别
+    "NeuralNetworkClassify"  深度学习分类
+    "NeuralNetworkDetect"    深度学习检测
+    "Custom"                 自定义识别器
+
+  动作类型常量 (action):
+    "DoNothing"    不操作
+    "Click"        点击
+    "LongPress"    长按
+    "Swipe"        滑动
+    "InputText"    输入文字
+    "ClickKey"     按键
+    "StartApp"     启动应用
+    "StopApp"      停止应用
+    "Shell"        Shell命令
+    "Custom"       自定义动作
+
+
+==============================================================================
+  快速查阅: 每个类的常用方法一览
+==============================================================================
+
+  Toolkit:
+    .init_option(path)              初始化
+    .find_adb_devices()             查找设备
+
+  Resource:
+    .post_bundle(path).wait()       加载资源
+    .post_pipeline(path).wait()     加载Pipeline
+    .override_pipeline(dict)        覆盖配置
+    .override_next(name, list)      覆盖next
+    .custom_recognition(name)       注册自定义识别器 (装饰器)
+    .custom_action(name)            注册自定义动作 (装饰器)
+
+  AdbController:
+    .post_connection().wait()       连接设备
+    .post_screencap().wait().get()  截屏
+    .post_click(x, y).wait()        点击
+    .post_swipe(x1,y1,x2,y2,dur)   滑动
+    .post_input_text(text)          输入文字
+    .post_start_app(pkg)            启动应用
+    .post_stop_app(pkg)             停止应用
+
+  Tasker:
+    .bind(resource, controller)     绑定资源和控制器
+    .post_task(entry, override)     执行任务
+    .inited                         是否已初始化
+    .controller                     获取控制器
+
+  Context (在自定义识别/动作中):
+    .run_task(entry)                执行子任务
+    .run_recognition(entry, image)  识别图片
+    .run_action(entry, box)         执行动作
+    .override_next(name, list)      修改后续流程
+    .tasker                         获取Tasker
+
+  Job:
+    .wait()                         等待完成
+    .get()                          获取结果
+    .status()                       获取状态
