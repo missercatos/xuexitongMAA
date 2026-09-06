@@ -1,6 +1,6 @@
 import os
 
-os.environ["MAAFW_BINARY_PATH"] = os.path.expanduser("~/maa-bin")
+os.environ["MAAFW_BINARY_PATH"] = os.path.expanduser("maa-bin")
 
 from maa.resource import Resource
 from maa.toolkit import Toolkit
