@@ -1,0 +1,38 @@
+关于git的使用:
+
+首先你必须要创建自己的分支，git branch -b you_branch
+正常的提交步骤
+然后再你的分支里gti push origin you_branch
+上传到你的远程分支上
+你需要提交pr
+gh pr create --title "you_title" --body "action_body" --base master --head you_branch
+这里的话我会看见你的pr
+我会gh pr list 查看你的pr
+然后拉取你的pr: gh pr checkout you_PR_ID
+在我的本地进行测试
+没问题后我会
+gh pr merge 2 --squash
+进行合并
+然后我会切换到本地分支 git checkout master
+推送到干净分支git push clean master 
+
+假如你还不是我们的内部开发者，你需要优先进行frok
+gh repo fork missercatos/xuexitongMAA
+接着你需要 git clone you/xuexitongMAA.git
+将你复制的地址克隆到本地
+你还需要为项目添加上游仓库
+git remote add upstream missercatos/xuexitongMAA
+你可以git remote -v来检查，你会看不同分支对应的不同项目地址。
+再你修改完代码之后，你需要推送到你自己的远程分支，git push origin main
+然后提交pr
+我们推荐你先创建自己的分支，因为这个时候主分支已经连接了原仓库作为上游，直接在你的本地主分支修改后期合并会造成严重的冲突。
+
+当你需要最新代码的时候你需要
+git checkout main到你的主分支
+然后
+git pull upstream main 拉取上游改动
+git push origin main把你拉取的更新改动到你的fork仓库
+当你需要在你的开发分支进行更新的时候
+再git checkout you-branch切换到你的开发分支
+git merge main合并主分支到你的开发分支
+
