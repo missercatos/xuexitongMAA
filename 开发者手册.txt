@@ -48,3 +48,29 @@ git checkout -b you_branch创建你的分支，下次在这里修改
 
 我会git push clean --delete you_branch删掉你的分支，
 如果你的修改有效我会在git fetch clean 拉到本地 git checkout -b test clean/test进行测试
+
+
+
+关于开发环境：
+
+该项目是基于MAA测试框架，需要maa环境
+因此你需要提前准备好MaaFramework核心库
+还有python环境
+在虚拟环境中pip install MaaFw
+
+第一步你需要下载系统对应的预编译包放在~/maa-bin目录下面。后续通过环境变量引用
+  curl -L -o /tmp/MAA-linux.zip \
+  "https://github.com/MaaXYZ/MaaFramework/releases/download/v5.12.3/MAA-linux-x86_64-v5.12.3.zip"
+  unzip /tmp/MAA-linux.zip -d /tmp/MAA-linux
+  cp -r /tmp/MAA-linux/bin ~/maa-bin
+第二步你需要准备虚拟环境
+  python -m venv ~/maa_env
+  source ~/maa_env/bin/activate
+第三步安装python绑定
+  pip install MaaFw==5.12.3
+第四步，在运行脚本前，设置MAAFW_BINARY_PATH环境变量指向~/maa-bin
+export MAAFW_BINARY_PATH=~/maa-bin
+
+关于测试：
+
+你需要准备好安卓虚拟环境，比如mumu模拟器，安装好相关应用，确认ADB可以连接到模拟器。
