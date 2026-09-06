@@ -1,8 +1,8 @@
 关于git的使用:
 
 首先你必须要创建自己的分支，git branch -b you_branch
-正常的提交步骤
-然后再你的分支里gti push origin you_branch
+正常的修改和上传步骤
+然后再你的分支里git push origin you_branch
 上传到你的远程分支上
 你需要提交pr
 gh pr create --title "you_title" --body "action_body" --base master --head you_branch
@@ -26,13 +26,25 @@ git remote add upstream missercatos/xuexitongMAA
 再你修改完代码之后，你需要推送到你自己的远程分支，git push origin main
 然后提交pr
 我们推荐你先创建自己的分支，因为这个时候主分支已经连接了原仓库作为上游，直接在你的本地主分支修改后期合并会造成严重的冲突。
-
 当你需要最新代码的时候你需要
-git checkout main到你的主分支
+git checkout master 到你的主分支
 然后
 git pull upstream main 拉取上游改动
-git push origin main把你拉取的更新改动到你的fork仓库
+git push origin master 把你拉取的更新改动到你的fork仓库
 当你需要在你的开发分支进行更新的时候
 再git checkout you-branch切换到你的开发分支
-git merge main合并主分支到你的开发分支
+git merge master合并主分支到你的开发分支
 
+当你再我们项目里面的时候，不需要frok,当你需要最新代码的时候，你需要
+git checkout master切换回主分支
+然后git pull origin main拉取最新更新
+接着git checkout you-branch切换回你的开发分支，git merge master合并到你的开发分支
+
+假如说你在你的本地主分支进行修改，然后在本地主分支拉取更新，导致不同的修改冲突在一起，
+你需要git log --oneline看看你提交的那个commit的哈希值
+然后git format-path 1 你的哈希值
+git reset --hard upstream/main强制你的主分支变得和上游一样
+git checkout -b you_branch创建你的分支，下次在这里修改
+
+我会git push clean --delete you_branch删掉你的分支，
+如果你的修改有效我会在git fetch clean 拉到本地 git checkout -b test clean/test进行测试
