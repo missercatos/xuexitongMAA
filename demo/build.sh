@@ -12,7 +12,7 @@ DIST_DIR="$SCRIPT_DIR/dist"
 BIN_SRC="$HOME/maa-bin"
 
 echo "========================================="
-echo "  学习通自动签到 - 打包工具"
+echo "  学习通自动刷课 - 打包工具"
 echo "========================================="
 echo ""
 
@@ -62,10 +62,10 @@ fi
 "$HOME/maa-venv/bin/python3" -m nuitka \
     --standalone \
     --output-dir="$BUILD_DIR" \
-    --output-filename="chaoxing_bot" \
+    --output-filename="xuexitong_bot" \
     --include-data-dir="$BUILD_DIR/bin=bin" \
     --include-data-dir="$SCRIPT_DIR/resource=resource" \
-    --include-data-files="$SCRIPT_DIR/runtime.py=runtime.py" \
+    --include-module=video_auto \
     --nofollow-import-to=tkinter \
     --nofollow-import-to=unittest \
     --nofollow-import-to=pytest \
@@ -97,7 +97,7 @@ echo "  输出目录: $DIST_DIR/"
 echo ""
 echo "  目录结构:"
 echo "    dist/"
-echo "    ├── chaoxing_bot       # 主程序"
+echo "    ├── xuexitong_bot      # 主程序"
 echo "    ├── bin/               # MaaFramework 库"
 echo "    ├── resource/          # 资源文件"
 echo "    └── *.so               # 依赖库"

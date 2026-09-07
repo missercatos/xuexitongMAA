@@ -1,0 +1,62 @@
+{
+    "查找视频入口": {
+        "recognition": "TemplateMatch",
+        "template": "video_icon.png",
+        "roi": [0, 200, 1080, 1600],
+        "action": "Click",
+        "target": true,
+        "timeout": 8000,
+        "next": ["等待视频加载", "无更多视频"]
+    },
+
+    "无更多视频": {
+        "recognition": "DirectHit",
+        "action": "DoNothing",
+        "doc": "当前页面没有更多视频，结束"
+    },
+
+    "等待视频加载": {
+        "recognition": "TemplateMatch",
+        "template": "video_player.png",
+        "roi": [0, 100, 1080, 1000],
+        "action": "DoNothing",
+        "timeout": 15000,
+        "next": ["检测视频时长"]
+    },
+
+    "检测视频时长": {
+        "recognition": "Custom",
+        "custom_recognition": "VideoDurationDetector",
+        "custom_recognition_param": "",
+        "action": "Custom",
+        "custom_action": "VideoWaiter",
+        "next": ["视频播放完成"]
+    },
+
+    "视频播放完成": {
+        "recognition": "DirectHit",
+        "action": "ClickKey",
+        "key": 4,
+        "post_delay": 2000,
+        "next": ["返回章节目录"]
+    },
+
+    "返回章节目录": {
+        "recognition": "TemplateMatch",
+        "template": "chapter_folder.png",
+        "roi": [0, 200, 1080, 1600],
+        "action": "DoNothing",
+        "timeout": 5000,
+        "next": ["滚动查找下一个视频"]
+    },
+
+    "滚动查找下一个视频": {
+        "recognition": "DirectHit",
+        "action": "Swipe",
+        "begin": [540, 1400],
+        "end": [540, 400],
+        "duration": 500,
+        "post_delay": 1000,
+        "next": ["查找视频入口"]
+    }
+}

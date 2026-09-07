@@ -1,5 +1,5 @@
 #!/bin/bash
-# 开发模式运行
+# 开发模式运行 - 自动刷课
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 export MAAFW_BINARY_PATH="$HOME/maa-bin"
 cd "$SCRIPT_DIR"
