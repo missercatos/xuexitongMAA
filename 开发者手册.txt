@@ -35,42 +35,42 @@ git push origin master 把你拉取的更新改动到你的fork仓库
 再git checkout you-branch切换到你的开发分支
 git merge master合并主分支到你的开发分支
 
-当你再我们项目里面的时候，不需要frok,当你需要最新代码的时候，你需要
+当你位于我们项目里面的时候，不需要frok,当你需要最新代码的时候，你需要
 git checkout master切换回主分支
 然后git pull origin main拉取最新更新
 接着git checkout you-branch切换回你的开发分支，git merge master合并到你的开发分支
 
-假如说你在你的本地主分支进行修改，然后在本地主分支拉取更新，导致不同的修改冲突在一起，
-你需要git log --oneline看看你提交的那个commit的哈希值
-然后git format-path 1 你的哈希值
-git reset --hard upstream/main强制你的主分支变得和上游一样
-git checkout -b you_branch创建你的分支，下次在这里修改
+假如说你在你的本地主分支修改，然后拉取最新更新到你的本地主分支，导致你的主项目受到了污染。
+看看git log --oneline里的提交记录，找到你的哈希值，git format-path -1 哈希值删除掉
+然后git reset --hard upstream/master将你的本地主分支变得和上游完全一样。
+然后你在创建自己的分支，下次在你自己的分支里修改。
 
-我会git push clean --delete you_branch删掉你的分支，
-如果你的修改有效我会在git fetch clean 拉到本地 git checkout -b test clean/test进行测试
-
-
+你在提交的时候要提交到你自己创建的新的远程分支，git push -u origin you_branch
+我会看到，我可能会git push clean --delete you_branch删除掉不合规的修改
+假如的修改合适。我会git fetch you_branch 将你的分支拉到本地进行测试。
 
 关于开发环境：
+本项目基于MAA框架进行开发，需要python3.11的开发环境，你需要创建虚拟
+python vent ~/maa-venv
+在bash下进入~/maa-venv/bin/activate
+pip install MaaFw下载开发环境
+export MAAFW_BINARY_PATH=~/maa-bin
+设置环境变量
 
-该项目是基于MAA测试框架，需要maa环境
-因此你需要提前准备好MaaFramework核心库
-还有python环境
-在虚拟环境中pip install MaaFw
-
-第一步你需要下载系统对应的预编译包放在~/maa-bin目录下面。后续通过环境变量引用
-  curl -L -o /tmp/MAA-linux.zip \
+同时你还需要将C++的开发文件准备到~/maa-bin里
+curl -L -o /tmp/MAA-linux.zip \
   "https://github.com/MaaXYZ/MaaFramework/releases/download/v5.12.3/MAA-linux-x86_64-v5.12.3.zip"
-  unzip /tmp/MAA-linux.zip -d /tmp/MAA-linux
-  cp -r /tmp/MAA-linux/bin ~/maa-bin
-第二步你需要准备虚拟环境
-  python -m venv ~/maa_env
-  source ~/maa_env/bin/activate
-第三步安装python绑定
-  pip install MaaFw==5.12.3
-第四步，在运行脚本前，设置MAAFW_BINARY_PATH环境变量指向~/maa-bin
+
+# 2. 解压
+unzip /tmp/MAA-linux.zip -d /tmp/MAA-linux
+
+# 3. 复制到目标目录
+cp -r /tmp/MAA-linux/bin ~/maa-bin
+
+# 4. 设置环境变量 (每次运行前)
 export MAAFW_BINARY_PATH=~/maa-bin
 
-关于测试：
+关于测试环境：
+MAA基于OJC截屏操作，所以需要模拟的安卓测试环境，需要模拟器来模拟安卓环境
+这里我们使用的是Android studiol来模拟学习通的软件运行。
 
-你需要准备好安卓虚拟环境，比如mumu模拟器，安装好相关应用，确认ADB可以连接到模拟器。
