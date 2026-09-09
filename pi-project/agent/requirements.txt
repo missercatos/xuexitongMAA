@@ -1,0 +1,12 @@
+# 学习通自动刷课 - Agent 依赖
+# 注意：Android 上可能需要使用 Chaquopy 版本的包
+
+# 基础依赖
+numpy>=1.21.0
+
+# 如果需要 OpenCV 进行图像处理
+# opencv-python>=4.5.0
+
+# 如果需要更强大的 OCR
+# paddleocr>=2.6.0
+# paddlepaddle>=2.3.0

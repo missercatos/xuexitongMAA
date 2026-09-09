@@ -1,0 +1,43 @@
+# 学习通自动刷课 - MaaFwApp 打包配方
+# 使用方法：
+#   1. 将此文件路径添加到 MaaFwApp 的 local.properties:
+#      pi.profile=/home/a/xuexitongMAA/pi-profile.yaml
+#   2. 运行: python scripts/setup_maa_framework.py
+#   3. 构建: ./gradlew :app:assembleDebug
+
+# PI 项目根目录（包含 interface.json）
+assets: /home/a/xuexitongMAA/pi-project
+
+# 包含的文件（默认已包含 interface.json, tasks/**, resource/** 等）
+include:
+  - interface.json
+  - tasks/**
+  - resource/**
+  - locales/**
+  - agent/**
+  - CONTACT
+  - LICENSE
+
+# 排除的文件
+exclude:
+  - resource/base/pipeline/debug/**
+
+# Agent 运行时配置
+agent:
+  sourceDir: /home/a/xuexitongMAA/agent-dist
+  abi: [arm64-v8a]
+  runtimes:
+    - location: bundle
+      executable: bin/python3
+      args: [-u, agent/main.py]
+      env:
+        PYTHONHOME: "{bundle}/prefix"
+        PYTHONPATH: "{bundle}/site-packages/pure.zip:{bundle}/site-packages"
+        LD_LIBRARY_PATH: "{bundle}/prefix/lib:{nativeLibs}"
+        MAAFW_BINARY_PATH: "{nativeLibs}"
+
+# 应用信息
+app:
+  id: xuexitong
+  label: 学习通自动刷课
+  icon: /home/a/xuexitongMAA/pi-project/resource/base/image/logo.png

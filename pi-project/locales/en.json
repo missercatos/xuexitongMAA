@@ -1,0 +1,23 @@
+{
+    "app_name": "XuexiTong Video Auto",
+    "app_description": "Automatically play XuexiTong course videos with duration detection",
+
+    "task_video_auto": "Auto Play Videos",
+    "task_video_auto_desc": "Automatically play all videos in XuexiTong course",
+
+    "option_video_speed": "Playback Speed",
+    "option_video_speed_desc": "Select video playback speed",
+    "option_video_speed_normal": "Normal Speed",
+    "option_video_speed_fast": "Fast (Skip Waiting)",
+
+    "option_skip_done": "Skip Played Videos",
+    "option_skip_done_desc": "Automatically skip previously played videos",
+
+    "preset_default": "Default",
+    "preset_default_desc": "Standard playback",
+    "preset_fast": "Fast Mode",
+    "preset_fast_desc": "Fast playback (skip played)",
+
+    "group_video": "Video Playback",
+    "group_setting": "Settings"
+}

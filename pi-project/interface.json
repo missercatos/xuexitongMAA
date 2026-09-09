@@ -1,0 +1,123 @@
+{
+    "interface_version": 2,
+    "name": "xuexitong-video-auto",
+    "label": "学习通自动刷课",
+    "version": "1.0.0",
+    "icon": "logo.png",
+    "description": "自动播放学习通课程视频，支持时长检测和循环播放",
+    "contact": "xuexitongMAA",
+    "license": "MIT",
+    "github": "https://github.com/missercatos/xuexitongMAA",
+
+    "languages": {
+        "zh_cn": "locales/zh_cn.json",
+        "en": "locales/en.json"
+    },
+
+    "controller": [
+        {
+            "name": "Android",
+            "label": "Android 设备",
+            "type": "Adb",
+            "display_short_side": 720,
+            "display_long_side": 1280
+        }
+    ],
+
+    "resource": [
+        {
+            "name": "default",
+            "label": "默认资源",
+            "path": ["./resource/base"],
+            "controller": ["Android"]
+        }
+    ],
+
+    "agent": [
+        {
+            "child_exec": "python3",
+            "child_args": ["-u", "agent/main.py"]
+        }
+    ],
+
+    "group": [
+        { "name": "video", "label": "视频刷课" },
+        { "name": "setting", "label": "设置" }
+    ],
+
+    "import": [
+        "tasks/video_tasks.json"
+    ],
+
+    "task": [
+        {
+            "name": "自动刷课",
+            "entry": "启动学习通",
+            "controller": ["Android"],
+            "resource": ["default"],
+            "group": ["video"],
+            "option": ["video_speed", "skip_done"],
+            "default_check": true
+        }
+    ],
+
+    "option": {
+        "video_speed": {
+            "type": "select",
+            "label": "播放速度",
+            "description": "选择视频播放速度",
+            "default_case": "normal",
+            "cases": [
+                {
+                    "name": "normal",
+                    "label": "正常速度",
+                    "pipeline_override": {}
+                },
+                {
+                    "name": "fast",
+                    "label": "快速（跳过等待）",
+                    "pipeline_override": {
+                        "自动刷课": {
+                            "custom_recognition_param": "{\"fast_mode\": true}"
+                        }
+                    }
+                }
+            ]
+        },
+        "skip_done": {
+            "type": "switch",
+            "label": "跳过已播放视频",
+            "description": "自动跳过之前播放过的视频",
+            "default": true,
+            "pipeline_override": {
+                "查找并播放视频": {
+                    "custom_recognition_param": "{\"skip_done\": true}"
+                }
+            }
+        }
+    },
+
+    "preset": [
+        {
+            "name": "默认配置",
+            "label": "标准刷课",
+            "task": [
+                { "name": "自动刷课", "enabled": true }
+            ]
+        },
+        {
+            "name": "快速模式",
+            "label": "快速刷课（跳过已播放）",
+            "task": [
+                {
+                    "name": "自动刷课",
+                    "enabled": true,
+                    "option": {
+                        "video_speed": "fast",
+                        "skip_done": true
+                    }
+                }
+            ]
+        }
+    ]
+}

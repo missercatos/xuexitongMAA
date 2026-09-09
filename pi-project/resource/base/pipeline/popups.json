@@ -1,0 +1,36 @@
+{
+    "[JumpBack]关闭广告弹窗": {
+        "recognition": "TemplateMatch",
+        "template": "ad_close.png",
+        "roi": [800, 0, 280, 200],
+        "action": "Click",
+        "doc": "关闭广告弹窗"
+    },
+
+    "[JumpBack]关闭公告": {
+        "recognition": "OCR",
+        "expected": ["我知道了", "确定", "知道了"],
+        "roi": [200, 800, 680, 400],
+        "action": "Click",
+        "target": true,
+        "doc": "关闭公告弹窗"
+    },
+
+    "[JumpBack]关闭更新提示": {
+        "recognition": "OCR",
+        "expected": ["以后再说", "取消", "暂不更新"],
+        "roi": [200, 800, 680, 400],
+        "action": "Click",
+        "target": true,
+        "doc": "关闭版本更新弹窗"
+    },
+
+    "[JumpBack]关闭签到弹窗": {
+        "recognition": "OCR",
+        "expected": "关闭",
+        "roi": [800, 0, 280, 200],
+        "action": "Click",
+        "target": true,
+        "doc": "意外出现的签到弹窗直接关闭"
+    }
+}

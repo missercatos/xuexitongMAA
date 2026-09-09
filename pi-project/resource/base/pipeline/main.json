@@ -1,0 +1,106 @@
+{
+    "启动学习通": {
+        "recognition": "DirectHit",
+        "action": "StartApp",
+        "package": "com.chaoxing.mobile",
+        "post_delay": 3000,
+        "next": ["等待主页加载"]
+    },
+
+    "等待主页加载": {
+        "recognition": "TemplateMatch",
+        "template": "home_bottom_bar.png",
+        "roi": [0, 1700, 1080, 220],
+        "action": "DoNothing",
+        "timeout": 15000,
+        "next": ["进入课程"]
+    },
+
+    "进入课程": {
+        "recognition": "TemplateMatch",
+        "template": "course_entry.png",
+        "roi": [0, 200, 1080, 1600],
+        "action": "Click",
+        "target": true,
+        "timeout": 10000,
+        "next": ["等待课程列表"]
+    },
+
+    "等待课程列表": {
+        "recognition": "TemplateMatch",
+        "template": "course_list_item.png",
+        "roi": [0, 200, 1080, 1600],
+        "action": "DoNothing",
+        "timeout": 10000,
+        "next": ["进入章节目录"]
+    },
+
+    "进入章节目录": {
+        "recognition": "TemplateMatch",
+        "template": "chapter_folder.png",
+        "roi": [0, 200, 1080, 1600],
+        "action": "Click",
+        "target": true,
+        "next": ["进入视频列表"]
+    },
+
+    "进入视频列表": {
+        "recognition": "DirectHit",
+        "action": "DoNothing",
+        "next": ["查找并播放视频"]
+    },
+
+    "查找并播放视频": {
+        "recognition": "TemplateMatch",
+        "template": "video_icon.png",
+        "roi": [0, 200, 1080, 1600],
+        "action": "Click",
+        "target": true,
+        "timeout": 8000,
+        "next": ["等待视频加载完成", "当前页无视频"]
+    },
+
+    "当前页无视频": {
+        "recognition": "DirectHit",
+        "action": "Swipe",
+        "begin": [540, 1400],
+        "end": [540, 400],
+        "duration": 500,
+        "post_delay": 1000,
+        "next": ["查找并播放视频"]
+    },
+
+    "等待视频加载完成": {
+        "recognition": "TemplateMatch",
+        "template": "video_player.png",
+        "roi": [0, 100, 1080, 1000],
+        "action": "DoNothing",
+        "timeout": 15000,
+        "next": ["自动刷课"]
+    },
+
+    "自动刷课": {
+        "recognition": "Custom",
+        "custom_recognition": "VideoDurationDetector",
+        "action": "Custom",
+        "custom_action": "VideoWaiter",
+        "next": ["视频播放结束"]
+    },
+
+    "视频播放结束": {
+        "recognition": "DirectHit",
+        "action": "ClickKey",
+        "key": 4,
+        "post_delay": 2000,
+        "next": ["返回查找下一个"]
+    },
+
+    "返回查找下一个": {
+        "recognition": "TemplateMatch",
+        "template": "chapter_folder.png",
+        "roi": [0, 200, 1080, 1600],
+        "action": "DoNothing",
+        "timeout": 5000,
+        "next": ["查找并播放视频"]
+    }
+}

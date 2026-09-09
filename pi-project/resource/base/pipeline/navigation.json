@@ -1,0 +1,64 @@
+{
+    "启动学习通": {
+        "recognition": "DirectHit",
+        "action": "StartApp",
+        "package": "com.chaoxing.mobile",
+        "post_delay": 3000,
+        "next": ["等待主页加载"]
+    },
+
+    "等待主页加载": {
+        "recognition": "TemplateMatch",
+        "template": "home_bottom_bar.png",
+        "roi": [0, 1700, 1080, 220],
+        "action": "DoNothing",
+        "timeout": 15000,
+        "next": ["点击我", "点击学习"]
+    },
+
+    "点击我": {
+        "recognition": "OCR",
+        "expected": "我",
+        "roi": [800, 1750, 280, 130],
+        "action": "Click",
+        "target": true,
+        "next": ["点击课程"]
+    },
+
+    "点击学习": {
+        "recognition": "OCR",
+        "expected": "学习",
+        "roi": [0, 1750, 280, 130],
+        "action": "Click",
+        "target": true,
+        "next": ["点击课程"]
+    },
+
+    "点击课程": {
+        "recognition": "TemplateMatch",
+        "template": "course_entry.png",
+        "roi": [0, 200, 1080, 1600],
+        "action": "Click",
+        "target": true,
+        "timeout": 10000,
+        "next": ["等待课程列表"]
+    },
+
+    "等待课程列表": {
+        "recognition": "TemplateMatch",
+        "template": "course_list_item.png",
+        "roi": [0, 200, 1080, 1600],
+        "action": "DoNothing",
+        "timeout": 10000,
+        "next": ["进入章节目录"]
+    },
+
+    "进入章节目录": {
+        "recognition": "TemplateMatch",
+        "template": "chapter_folder.png",
+        "roi": [0, 200, 1080, 1600],
+        "action": "Click",
+        "target": true,
+        "next": ["查找视频入口"]
+    }
+}

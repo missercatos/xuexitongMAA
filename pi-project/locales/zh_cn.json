@@ -1,0 +1,23 @@
+{
+    "app_name": "学习通自动刷课",
+    "app_description": "自动播放学习通课程视频，支持时长检测和循环播放",
+
+    "task_video_auto": "自动刷课",
+    "task_video_auto_desc": "自动播放学习通课程中的所有视频",
+
+    "option_video_speed": "播放速度",
+    "option_video_speed_desc": "选择视频播放速度",
+    "option_video_speed_normal": "正常速度",
+    "option_video_speed_fast": "快速（跳过等待）",
+
+    "option_skip_done": "跳过已播放视频",
+    "option_skip_done_desc": "自动跳过之前播放过的视频",
+
+    "preset_default": "默认配置",
+    "preset_default_desc": "标准刷课",
+    "preset_fast": "快速模式",
+    "preset_fast_desc": "快速刷课（跳过已播放）",
+
+    "group_video": "视频刷课",
+    "group_setting": "设置"
+}
